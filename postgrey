@@ -13,7 +13,7 @@ use Pod::Usage;
 use Getopt::Long 2.25 qw(:config posix_default no_ignore_case);
 use Net::Server; # used only to find out which version we use
 use Net::Server::Multiplex;
-use BerkeleyDB;
+use DBI;
 use Fcntl ':flock'; # import LOCK_* constants
 use Sys::Hostname;
 use Sys::Syslog; # used only to find out which version we use
@@ -25,6 +25,96 @@ use vars qw(@ISA);
 my $VERSION = '1.31';
 my $DEFAULT_DBDIR = '/var/spool/postfix/postgrey';
 my $CONFIG_DIR = '/etc/postfix';
+
+sub db_init_sqlite($$)
+{
+    my ($self, $file) = @_;
+    
+    my $dbh = DBI->connect("dbi:SQLite:dbname=$file","","")
+        or die "ERROR: can't open SQLite file $file: $DBI::errstr\n";
+
+    $self->{postgrey}{dbh} =  $dbh;
+
+    $dbh->{RaiseError} = 1;
+
+    eval {
+        $dbh->do(<<SQL);
+PRAGMA synchronous = NORMAL;
+SQL
+
+        # create database schema if needed
+        # triplets
+        $dbh->do(<<SQL);
+CREATE TABLE IF NOT EXISTS triplets (
+    ip      TEXT, -- IP address of the SMTP client (stripped of last byte)
+    send    TEXT, -- Sender email
+    rcpt    TEXT, -- Recipient email
+    host    TEXT, -- Host-part of the IP address of the SMTP client
+    first_t INTEGER, -- Timestamp: first seen
+    last_t  INTEGER, -- Timestamp: last seen
+    PRIMARY KEY(ip, send, rcpt)
+);
+SQL
+
+        $dbh->do(<<SQL);
+CREATE INDEX IF NOT EXISTS triplets_last_t_idx ON triplets(last_t);
+SQL
+
+        # cawl
+        $dbh->do(<<SQL);
+CREATE TABLE IF NOT EXISTS cawl (
+    ip      TEXT,    -- IP address of the SMTP client
+    count   INTEGER, -- Successful greylist passes
+    first_t INTEGER, -- Timestamp: when first whitelisted
+    last_t  INTEGER, -- Timestamp: last seen
+    PRIMARY KEY(ip)
+);
+SQL
+
+        $dbh->do(<<SQL);
+CREATE INDEX IF NOT EXISTS cawl_last_t_idx ON cawl(last_t);
+SQL
+
+        # prepare statements for later use
+        $self->{postgrey}{sth_triplets_lookup} = $dbh->prepare(<<SQL);
+SELECT first_t, last_t
+ FROM  triplets
+ WHERE ip = ? AND send = ? AND rcpt = ?
+SQL
+
+        $self->{postgrey}{sth_triplets_insert} = $dbh->prepare(<<SQL);
+INSERT INTO triplets (ip, send, rcpt, host, first_t, last_t)
+ VALUES (?, ?, ?, ?, ?, ?)
+SQL
+
+        $self->{postgrey}{sth_triplets_update} = $dbh->prepare(<<SQL);
+UPDATE triplets SET host=?, first_t=?, last_t=?
+ WHERE ip=? AND send=? AND rcpt=?
+SQL
+
+        $self->{postgrey}{sth_cawl_lookup} = $dbh->prepare(<<SQL);
+SELECT count, last_t FROM cawl WHERE ip = ?
+SQL
+
+        $self->{postgrey}{sth_cawl_insert} = $dbh->prepare(<<SQL);
+INSERT INTO cawl (ip, count, first_t, last_t) VALUES (?, ?, ?, ?)
+SQL
+
+        $self->{postgrey}{sth_cawl_update} = $dbh->prepare(<<SQL);
+UPDATE cawl SET count=?, first_t=?, last_t=? WHERE ip=?
+SQL
+
+        $self->{postgrey}{sth_cawl_update2} = $dbh->prepare(<<SQL);
+UPDATE cawl SET count=?, last_t=? WHERE ip=?
+SQL
+    };
+    if ($@) {
+        die "ERROR: can't initialize SQLite database $file: $@\n";
+    }
+
+    $dbh->{RaiseError} = 1;
+    $dbh->{AutoCommit} = 0;
+}
 
 sub cidr_parse($)
 {
@@ -207,94 +297,6 @@ sub mylog_action($$$;$$)
     $self->mylog(2, $str);
 }
 
-sub do_maintenance($$)
-{
-    my ($self, $now) = @_;
-    my $db     = $self->{postgrey}{db};
-    my $db_env = $self->{postgrey}{db_env};
-
-    # remove old db logs
-
-    $self->mylog(1, "cleaning up old logs...");
-    $db_env->txn_checkpoint(0, 0) and
-        warn "can't checkpoint !? $BerkeleyDB::Error";
-    for my $l ($db_env->log_archive(DB_ARCH_ABS)) {
-        $self->mylog(1, "rm $l");
-        unlink $l or warn "can't remove db log $l: $!\n";
-    }
-
-    # remove old keys
-    # this is very expensive:  We might refuse to speak to postfix for too
-    # long, after which clients will start getting "450 Server configuration
-    # problem" errors... do it only during the night and only if at least one
-    # day has passed
-    my $hour = (localtime($now))[2];
-    if($hour > 1 and $hour < 7 and
-        $now - $self->{postgrey}{last_maint_keys} >= 82800)
-    {
-        $self->mylog(1, "cleaning up old entries...");
-        my $max_age = $self->{postgrey}{max_age};
-        my $retry_window = $self->{postgrey}{retry_window};
-        my ($nr_keys_before, $nr_keys_after) = (0,0);
-        # note: deleteing hash elements in a 'each'-loop isn't supported
-        # that's why we first put them in @old_keys and then delete them
-        my @old_keys = ();
-        while (my ($key, $value) = each %$db) {
-            $nr_keys_before++;
-            my ($first, $last) = split(/,/,$value);
-            if(not defined $last) {
-                # shouldn't happen
-                push @old_keys, $key;
-            }
-            elsif($now - $last > $max_age) {
-                # last-seen passed max-age
-                push @old_keys, $key;
-            }
-            elsif($last-$first < $self->{postgrey}{delay} and $now-$last > $retry_window) {
-                # no successful entry yet and last seen passed retry-window
-                push @old_keys, $key;
-            }
-            else {
-                $nr_keys_after++;
-            }
-        }
-        my $db_obj = $self->{postgrey}{db_obj};
-        my $txn = $db_env->txn_begin();
-        $db_obj->Txn($txn);
-        for my $key (@old_keys) { delete $db->{$key}; }
-        $txn->txn_commit();
-        
-        $self->mylog(1, "cleaning main database finished. before: $nr_keys_before, after: $nr_keys_after");
-
-        if($self->{postgrey}{awl_clients}) {
-            # cleanup clients auto-whitelist database
-            my $cawl_db  = $self->{postgrey}{db_cawl};
-            ($nr_keys_before, $nr_keys_after) = (0, 0);
-            $nr_keys_after=0;
-            my @old_keys_cawl = ();
-            while (my ($key, $value) = each %$cawl_db) {
-                my $cawl_last_seen = (split(/,/, $value))[1];
-                $nr_keys_before++;
-                if($now - $cawl_last_seen > $max_age) {
-                    push @old_keys_cawl, $key;
-                }
-                else {
-                    $nr_keys_after++;
-                }
-            }
-            my $db_cawl_obj = $self->{postgrey}{db_cawl_obj};
-            $txn = $db_env->txn_begin();
-            $db_cawl_obj->Txn($txn);
-            for my $key (@old_keys_cawl) { delete $cawl_db->{$key}; }
-            $txn->txn_commit();
-
-            $self->mylog(1, "cleaning clients database finished. before: $nr_keys_before, after: $nr_keys_after");
-        }
-
-        $self->{postgrey}{last_maint_keys}=$now;
-    }
-}
-
 sub is_new_instance($$)
 {
     my ($self, $inst) = @_;
@@ -320,7 +322,6 @@ sub is_new_instance($$)
 sub smtpd_access_policy($$)
 {
     my ($self, $now, $attr) = @_;
-    my $db  = $self->{postgrey}{db};
     # This attribute occurs in connections from the policy-test script,
     # not in a regular postfix query connection
     if(defined $attr->{policy_test_time}) { $now = $attr->{policy_test_time} }
@@ -352,42 +353,48 @@ sub smtpd_access_policy($$)
     }
 
     # auto whitelist clients (see below for explanation)
-    my ($cawl_db, $cawl_key, $cawl_count, $cawl_last);
+    my ($cawl_key, $cawl_count, $cawl_last);
     if($self->{postgrey}{awl_clients}) {
-        $cawl_db  = $self->{postgrey}{db_cawl};
+        # lookup cawl
         $cawl_key = $attr->{client_address};
-        if ($self->{postgrey}{privacy}) {
-             $cawl_key = Digest::SHA1::sha1_hex($cawl_key);
+        if($self->{postgrey}{privacy}) {
+            $cawl_key = Digest::SHA1::sha1_hex($cawl_key);
         }
-        my $cawl_val = $cawl_db->{$cawl_key};
-        ($cawl_count, $cawl_last) = split(/,/,$cawl_val) if defined $cawl_val;
+        my $sth = $self->{postgrey}{sth_cawl_lookup};
+        $sth->execute($cawl_key);
+        my ($cawl_count, $cawl_last) = $sth->fetchrow_array();
         
-        # whitelist if count is enough
+        # let through if count is enough
         if(defined $cawl_count and $cawl_count >= $self->{postgrey}{awl_clients})
         {
             if($now >= $cawl_last+3600) {
                 $cawl_count++; # for statistics
-                $cawl_db->{$cawl_key}=$cawl_count.','.$now;
+                my $sth=$self->{postgrey}{sth_cawl_update2};
+                $sth->execute($cawl_count, $now, $cawl_key);
             }
             $self->mylog_action($attr, 'pass', 'client AWL');
             return 'DUNNO';
         }
     }
 
-    # lookup
-    my $sender = $self->do_sender_substitutions($attr->{sender});
+    # lookup: prepare data
+    my $sender = lc($self->do_sender_substitutions($attr->{sender}));
+    my $recip  = lc($attr->{recipient});
     my ($client_net, $client_host) =
         $self->do_client_substitutions($attr->{client_address}, $attr->{client_name});
-    my $key    = lc "$client_net/$sender/$attr->{recipient}";
-    if ($self->{postgrey}{privacy}) {
-        $key = Digest::SHA1::sha1_hex($key);
+    if($self->{postgrey}{privacy}) {
+        $sender     = Digest::SHA1::sha1_hex($sender);
+        $recip      = Digest::SHA1::sha1_hex($recip);
+        $client_net = Digest::SHA1::sha1_hex($client_net);
     }
-    my $val    = $db->{$key};
-    my $first;
+
+    # lookup: execute SQL
+    my $sth = $self->{postgrey}{sth_triplets_lookup};
+    $sth->execute($client_net, $sender, $recip);
+    my ($first, $last) = $sth->fetchrow_array();
+    
     my $last_was_successful=0;
-    if(defined $val) {
-        my $last;
-        ($first, $last) = split(/,/,$val);
+    if(defined $first) {
         # find out if the last time was unsuccessful, so that we can add a header
         # to say how much had to be waited
         if($last - $first >= $self->{postgrey}{delay}) {
@@ -403,12 +410,18 @@ sub smtpd_access_policy($$)
         $first = $now;
     }
 
-    # update (put as last element stripped host-part if it was stripped)
-    if(defined $client_host) {
-        $db->{$key}="$first,$now,$client_host";
+    # update
+    if(not defined $last) {
+        $self->{postgrey}{sth_triplets_insert}->execute(
+            $client_net, $sender, $recip,
+            $client_host, $first, $now
+        );
     }
     else {
-        $db->{$key}="$first,$now";
+        $self->{postgrey}{sth_triplets_update}->execute(
+            $client_host, $first, $now,
+            $client_net, $sender, $recip
+        );
     }
 
     my $diff = $self->{postgrey}{delay} - ($now - $first);
@@ -425,12 +438,24 @@ sub smtpd_access_policy($$)
             if(! defined $cawl_last or $now >= $cawl_last + 3600) {
                 # ok, increase count
                 $cawl_count++;
-                $cawl_db->{$cawl_key}=$cawl_count.','.$now;
-                my $client = $attr->{client_name} ?
-                    $attr->{client_name}.'['.$attr->{client_address}.']' :
-                    $attr->{client_address};
-                $self->mylog(1, "whitelisted: $client")
-                    if $cawl_count==$self->{postgrey}{awl_clients};
+                # log if client has reached the count and is now whitelisted
+                my $cawl_first_t = undef;
+                if($cawl_count==$self->{postgrey}{awl_clients}) {
+                    my $client = $attr->{client_name} ?
+                        $attr->{client_name}.'['.$attr->{client_address}.']' :
+                        $attr->{client_address};
+                    $self->mylog(1, "whitelisted: $client");
+                    $cawl_first_t = $now;
+                }
+                # cawl database: insert or update
+                if(not defined $cawl_last) {
+                    my $sth=$self->{postgrey}{sth_cawl_insert};
+                    $sth->execute($cawl_key, $cawl_count, $cawl_first_t, $now);
+                }
+                else {
+                    my $sth=$self->{postgrey}{sth_cawl_update};
+                    $sth->execute($cawl_count, $cawl_first_t, $now, $cawl_key);
+                }
             }
         }
     }
@@ -571,8 +596,8 @@ sub main()
         postgrey => {
             delay            => $opt{delay}     || 300,
             max_age          => $opt{'max-age'} || 35,
+            last_commit      => time,
             last_maint       => time,
-            last_maint_keys  => 0, # do it on the first night
             lookup_by_host   => $opt{'lookup-by-host'},
             awl_clients      => defined $opt{'auto-whitelist-clients'} ?
                 ($opt{'auto-whitelist-clients'} ne '' ?
@@ -649,38 +674,7 @@ sub pre_loop_hook()
     open(LOCK, ">>$lock") or die "ERROR: can't open lock file: $lock\n";
     flock(LOCK, LOCK_EX|LOCK_NB) or die "ERROR: locked: $lock\n";
 
-    # my $setflags = DB_TXN_NOSYNC;
-    my $setflags = 0; # see http://bugs.debian.org/334430
-    if($BerkeleyDB::db_version >= 4.1) {
-        $setflags |= BerkeleyDB::DB_AUTO_COMMIT;
-    }
-    else {
-        warn "disabling DB_AUTO_COMMIT because you are using BerkeleyDB version $BerkeleyDB::db_version. Version 4.1 is required for DB_AUTO_COMMIT. You might have problems in case of system failures to recover the database.\n";
-    }
-
-    # open database with transactions, logging and auto-commit to make it as
-    # safe as possible. Note that locking is not required since only one
-    # process is running
-    $self->{postgrey}{db_env} = BerkeleyDB::Env->new(
-        -Home     => $self->{server}{dbdir},
-        -Flags    => DB_CREATE|DB_RECOVER|DB_INIT_TXN|DB_INIT_MPOOL|DB_INIT_LOG,
-        -SetFlags => $setflags,
-    ) or die "ERROR: can't create DB environment: $! (" .
-             "dbdir: ".$self->{server}{dbdir}." uid/gid: $<,$>)\n";
-
-    $self->{postgrey}{db_obj} = tie(%{$self->{postgrey}{db}}, 'BerkeleyDB::Btree',
-        -Filename => 'postgrey.db',
-        -Flags    => DB_CREATE,
-        -Env      => $self->{postgrey}{db_env}
-    ) or die "ERROR: can't create database $self->{server}{dbdir}/postgrey.db: $!\n";
-
-    if($self->{postgrey}{awl_clients}) {
-        $self->{postgrey}{db_cawl_obj} = tie(%{$self->{postgrey}{db_cawl}}, 'BerkeleyDB::Btree',
-            -Filename => 'postgrey_clients.db',
-            -Flags    => DB_CREATE,
-            -Env      => $self->{postgrey}{db_env}
-        ) or die "ERROR: can't create database $self->{server}{dbdir}/postgrey_clients.db: $!\n";
-    }
+    $self->db_init_sqlite("$self->{server}{dbdir}/postgrey.sqlite");
 }
 
 sub mux_input()
@@ -688,6 +682,7 @@ sub mux_input()
     my ($self, $mux, $fh, $in_ref) = @_;
     defined $self->{postgrey_attr} or $self->{postgrey_attr} = {};
     my $attr = $self->{postgrey_attr};
+    my $transaction_time = time;
 
     # consume entire lines
     while ($$in_ref =~ s/^([^\r\n]*)\r?\n//) {
@@ -711,17 +706,17 @@ sub mux_input()
                 # give answer
                 print $fh "action=$action\n\n";
 
-                # attempt maintenance if one hour has passed since the last one
-                my $server = $self->{net_server};
-                if($server->{postgrey}{last_maint} && 
-                    $now-$server->{postgrey}{last_maint} >= 3600)
-                {
-                    $server->{postgrey}{last_maint} = $now;
-                    $server->do_maintenance($now);
+                # cleanup and commit if enough time has passed
+                if($now-$self->{net_server}{postgrey}{last_commit} >= 60) {
+                    $self->mylog(2, "Committing");
+                    # FIXME: cleanup
+                    my $dbh = $self->{net_server}{postgrey}{dbh};
+                    $dbh->commit();
+                    $self->{net_server}{postgrey}{last_commit} = $now;
                 }
 
                 # close the filehandle if --exim is set
-                if ($self->{net_server}->{postgrey}{exim}) {
+                if ($self->{net_server}{postgrey}{exim}) {
                     close($fh);
                     last;
                 } 
@@ -741,6 +736,13 @@ sub fatal_hook()
     # it does exit(0) (with Net::Server 0.97)...
     # It is however useful for init-script to detect non-zero exit codes
     die('ERROR: ' . $error);
+}
+
+sub pre_server_close_hook()
+{
+    my ($self) = @_;
+    $self->mylog(2, "Committing");
+    $self->{postgrey}{dbh}->commit() if defined $self->{postgrey}{dbh};
 }
 
 main;
