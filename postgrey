@@ -30,12 +30,12 @@ sub db_init_sqlite($$)
 {
     my ($self, $file) = @_;
     
-    my $dbh = DBI->connect("dbi:SQLite:dbname=$file","","")
+    my $dbh = DBI->connect("dbi:SQLite:dbname=$file","","", {AutoCommit => 0})
         or die "ERROR: can't open SQLite file $file: $DBI::errstr\n";
 
     $self->{postgrey}{dbh} =  $dbh;
 
-    $dbh->{RaiseError} = 1;
+    local $dbh->{RaiseError} = 1;
 
     eval {
         $dbh->do(<<SQL);
@@ -43,7 +43,6 @@ PRAGMA synchronous = NORMAL;
 SQL
 
         # create database schema if needed
-        # triplets
         $dbh->do(<<SQL);
 CREATE TABLE IF NOT EXISTS triplets (
     ip      TEXT, -- IP address of the SMTP client (stripped of last byte)
@@ -60,7 +59,6 @@ SQL
 CREATE INDEX IF NOT EXISTS triplets_last_t_idx ON triplets(last_t);
 SQL
 
-        # cawl
         $dbh->do(<<SQL);
 CREATE TABLE IF NOT EXISTS cawl (
     ip      TEXT,    -- IP address of the SMTP client
@@ -92,6 +90,13 @@ UPDATE triplets SET host=?, first_t=?, last_t=?
  WHERE ip=? AND send=? AND rcpt=?
 SQL
 
+        $self->{postgrey}{sth_triplets_cleanup} = $dbh->prepare(<<SQL);
+DELETE FROM triplets
+ WHERE last_t < ? OR
+       (last_t - first_t <  $self->{postgrey}{delay} AND
+         ? - last_t > $self->{postgrey}{retry_window})
+SQL
+
         $self->{postgrey}{sth_cawl_lookup} = $dbh->prepare(<<SQL);
 SELECT count, last_t FROM cawl WHERE ip = ?
 SQL
@@ -107,13 +112,16 @@ SQL
         $self->{postgrey}{sth_cawl_update2} = $dbh->prepare(<<SQL);
 UPDATE cawl SET count=?, last_t=? WHERE ip=?
 SQL
+
+        $self->{postgrey}{sth_cawl_cleanup} = $dbh->prepare(<<SQL);
+DELETE FROM cawl WHERE last_t < ?
+SQL
     };
     if ($@) {
         die "ERROR: can't initialize SQLite database $file: $@\n";
     }
 
-    $dbh->{RaiseError} = 1;
-    $dbh->{AutoCommit} = 0;
+    $dbh->commit;
 }
 
 sub cidr_parse($)
@@ -261,6 +269,19 @@ sub do_client_substitutions($$$)
     return (join('.', @ip[0..2], '0'), $ip[3]);
 }
 
+sub do_maintenance($$)
+{
+    my ($self, $now) = @_;
+
+    my $old_t = $now - $self->{postgrey}{max_age};
+
+    # remove old triplets
+    $self->{postgrey}{sth_triplets_cleanup}->execute($old_t, $now);
+
+    # remove old cawl entries
+    $self->{postgrey}{sth_cawl_cleanup}->execute($old_t);
+}
+
 sub mylog($$$)
 {
     my ($self, $level, $string) = @_;
@@ -322,9 +343,10 @@ sub is_new_instance($$)
 sub smtpd_access_policy($$)
 {
     my ($self, $now, $attr) = @_;
+
     # This attribute occurs in connections from the policy-test script,
     # not in a regular postfix query connection
-    if(defined $attr->{policy_test_time}) { $now = $attr->{policy_test_time} }
+    $now = $attr->{policy_test_time} if defined $attr->{policy_test_time};
 
     # whitelists
     for my $w (@{$self->{postgrey}{whitelist_clients}}) {
@@ -362,7 +384,7 @@ sub smtpd_access_policy($$)
         }
         my $sth = $self->{postgrey}{sth_cawl_lookup};
         $sth->execute($cawl_key);
-        my ($cawl_count, $cawl_last) = $sth->fetchrow_array();
+        ($cawl_count, $cawl_last) = $sth->fetchrow_array();
         
         # let through if count is enough
         if(defined $cawl_count and $cawl_count >= $self->{postgrey}{awl_clients})
@@ -448,7 +470,7 @@ sub smtpd_access_policy($$)
                     $cawl_first_t = $now;
                 }
                 # cawl database: insert or update
-                if(not defined $cawl_last) {
+                if($cawl_count==1) {
                     my $sth=$self->{postgrey}{sth_cawl_insert};
                     $sth->execute($cawl_key, $cawl_count, $cawl_first_t, $now);
                 }
@@ -675,6 +697,8 @@ sub pre_loop_hook()
     flock(LOCK, LOCK_EX|LOCK_NB) or die "ERROR: locked: $lock\n";
 
     $self->db_init_sqlite("$self->{server}{dbdir}/postgrey.sqlite");
+    $self->do_maintenance(time);
+    $self->{postgrey}{dbh}->commit();
 }
 
 sub mux_input()
@@ -708,10 +732,8 @@ sub mux_input()
 
                 # cleanup and commit if enough time has passed
                 if($now-$self->{net_server}{postgrey}{last_commit} >= 60) {
-                    $self->mylog(2, "Committing");
-                    # FIXME: cleanup
-                    my $dbh = $self->{net_server}{postgrey}{dbh};
-                    $dbh->commit();
+                    $self->{net_server}->do_maintenance($now);
+                    $self->{net_server}{postgrey}{dbh}->commit();
                     $self->{net_server}{postgrey}{last_commit} = $now;
                 }
 
@@ -741,7 +763,6 @@ sub fatal_hook()
 sub pre_server_close_hook()
 {
     my ($self) = @_;
-    $self->mylog(2, "Committing");
     $self->{postgrey}{dbh}->commit() if defined $self->{postgrey}{dbh};
 }
 
