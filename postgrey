@@ -631,7 +631,7 @@ sub main()
             delay            => $opt{delay}     || 300,
             max_age          => $opt{'max-age'} || 35,
             last_commit      => time,
-            last_maint       => time,
+            #last_maint       => time,
             lookup_by_host   => $opt{'lookup-by-host'},
             awl_clients      => defined $opt{'auto-whitelist-clients'} ?
                 ($opt{'auto-whitelist-clients'} ne '' ?
