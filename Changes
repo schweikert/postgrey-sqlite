@@ -1,3 +1,7 @@
+* 2007-10-10: version 2.00alpha1
+
+   - use SQLite instead of BerkeleyDB as DB-backend
+
 * 2007-09-06: version 1.31
 
    - support CIDR-style addresses in the client whitelist (Claudio Strizzolo)
