@@ -99,9 +99,12 @@ UPDATE triplets SET host=?, first_t=?, last_t=?, delta_t=?
 SQL
 
         $self->{postgrey}{sth_triplets_cleanup} = $dbh->prepare(<<SQL);
+DELETE FROM triplets WHERE last_t < ?
+SQL
+
+        $self->{postgrey}{sth_triplets_cleanup2} = $dbh->prepare(<<SQL);
 DELETE FROM triplets
- WHERE last_t < ? OR
-       (delta_t < $self->{postgrey}{delay} AND last_t < ?)
+ WHERE delta_t < $self->{postgrey}{delay} AND last_t < ?
 SQL
 
         $self->{postgrey}{sth_cawl_lookup} = $dbh->prepare(<<SQL);
@@ -284,7 +287,8 @@ sub do_maintenance($$)
     my $retry_window_t = $now - $self->{postgrey}{retry_window};
 
     # remove old triplets
-    $self->{postgrey}{sth_triplets_cleanup}->execute($max_age_t, $retry_window_t);
+    $self->{postgrey}{sth_triplets_cleanup}->execute($max_age_t);
+    $self->{postgrey}{sth_triplets_cleanup2}->execute($retry_window_t);
 
     # remove old cawl entries
     $self->{postgrey}{sth_cawl_cleanup}->execute($max_age_t);
