@@ -23,8 +23,8 @@ use vars qw(@ISA);
 @ISA = qw(Net::Server::Multiplex);
 
 my $VERSION = '2.0alpha1';
-my $DEFAULT_DBDIR = '/var/spool/postfix/postgrey';
-my $CONFIG_DIR = '/etc/postfix';
+my $DEFAULT_DBDIR = '/var/lib/postgrey';
+my $CONFIG_DIR = '/etc/postgrey';
 
 sub db_init_sqlite($$)
 {
@@ -850,7 +850,7 @@ doing lookups in the database.
 =item *
 
 Create a C<postgrey> user and the directory where to put the database I<dbdir>
-(default: C</var/spool/postfix/postgrey>)
+(default: C</var/lib/postgrey>)
 
 =item *
 
@@ -871,11 +871,11 @@ Put something like this in /etc/main.cf:
 =item *
 
 Install the provided postgrey_whitelist_clients and
-postgrey_whitelist_recipients in /etc/postfix.
+postgrey_whitelist_recipients in /etc/postgrey.
 
 =item *
 
-Put in /etc/postfix/postgrey_whitelist_recipients users that do not want
+Put in /etc/postgrey/postgrey_whitelist_recipients users that do not want
 greylisting.
 
 =back
@@ -886,9 +886,9 @@ Whitelists allow you to specify client addresses or recipient address, for
 which no greylisting should be done. Per default postgrey will read the
 following files:
 
- /etc/postfix/postgrey_whitelist_clients
- /etc/postfix/postgrey_whitelist_clients.local
- /etc/postfix/postgrey_whitelist_recipients
+ /etc/postgrey/postgrey_whitelist_clients
+ /etc/postgrey/postgrey_whitelist_clients.local
+ /etc/postgrey/postgrey_whitelist_recipients
 
 You can specify alternative paths with the --whitelist-x options.
 
