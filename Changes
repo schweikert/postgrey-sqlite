@@ -1,6 +1,9 @@
-* 2007-10-10: version 2.00alpha1
+* UNRELEASED: version 2.00alpha2
 
    - use SQLite instead of BerkeleyDB as DB-backend
+   - dbdir is now per default /var/lib/postgrey and the
+     configuration directory /etc/postgrey (instead of
+     respectively /var/spool/postfix/postgrey and /etc/postfix).
 
 * 2007-09-06: version 1.31
 
