@@ -411,20 +411,23 @@ sub smtpd_access_policy($$)
         }
     }
 
-    # lookup: prepare data
+    # lookup
     my $sender = lc($self->do_sender_substitutions($attr->{sender}));
     my $recip  = lc($attr->{recipient});
     my ($client_net, $client_host) =
         $self->do_client_substitutions($attr->{client_address}, $attr->{client_name});
+    my $sth = $self->{postgrey}{sth_triplets_lookup};
+    my $privacy_key;
     if($self->{postgrey}{privacy}) {
-        $sender     = Digest::SHA1::sha1_hex($sender);
-        $recip      = Digest::SHA1::sha1_hex($recip);
-        $client_net = Digest::SHA1::sha1_hex($client_net);
+        $privacy_key = lc "$client_net/$sender/$attr->{recipient}";
+        $privacy_key = Digest::SHA1::sha1_hex($privacy_key);
+        $sth->execute($privacy_key, undef, undef);
+    }
+    else {
+        $sth->execute($client_net, $sender, $recip);
     }
 
     # lookup: execute SQL
-    my $sth = $self->{postgrey}{sth_triplets_lookup};
-    $sth->execute($client_net, $sender, $recip);
     my ($first, $last) = $sth->fetchrow_array();
     
     my $last_was_successful=0;
@@ -445,17 +448,33 @@ sub smtpd_access_policy($$)
     }
 
     # update
-    if(not defined $last) {
-        $self->{postgrey}{sth_triplets_insert}->execute(
-            $client_net, $sender, $recip,
-            $client_host, $first, $now, $now-$first
-        );
+    if($self->{postgrey}{privacy}) {
+        if(not defined $last) {
+            $self->{postgrey}{sth_triplets_insert}->execute(
+                $privacy_key, undef, undef,
+                undef, $first, $now, $now-$first
+            );
+        }
+        else {
+            $self->{postgrey}{sth_triplets_update}->execute(
+                undef, $first, $now, $now-$first,
+                $privacy_key, undef, undef,
+            );
+        }
     }
     else {
-        $self->{postgrey}{sth_triplets_update}->execute(
-            $client_host, $first, $now, $now-$first,
-            $client_net, $sender, $recip
-        );
+        if(not defined $last) {
+            $self->{postgrey}{sth_triplets_insert}->execute(
+                $client_net, $sender, $recip,
+                $client_host, $first, $now, $now-$first
+            );
+        }
+        else {
+            $self->{postgrey}{sth_triplets_update}->execute(
+                $client_host, $first, $now, $now-$first,
+                $client_net, $sender, $recip
+            );
+        }
     }
 
     my $diff = $self->{postgrey}{delay} - ($now - $first);
@@ -528,6 +547,19 @@ sub smtpd_access_policy($$)
 
     $self->mylog_action($attr, 'pass', 'triplet found');
     return 'DUNNO';
+}
+
+sub read_config($)
+{
+    my ($file) =  @_;
+    open(CONFIG, $file) or die "ERROR: can't read $file: $!\n";
+    while(<CONFIG>) {
+        chomp;
+        s/^\s+//;
+        s/\s+$//;
+        next if /^#/;
+        next if $_ eq '';
+    }
 }
 
 sub main()
