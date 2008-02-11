@@ -549,18 +549,70 @@ sub smtpd_access_policy($$)
     return 'DUNNO';
 }
 
-sub read_config($)
+my @getopt_options = ( 'config|c=s', 'help|h', 'man', 'version',
+        'noaction|no-action|n', 'verbose|v', 'quiet|q', 'daemonize|d',
+        'unix|u=s', 'inet|i=s', 'user=s', 'group=s', 'dbdir=s', 'pidfile=s',
+        'delay=i', 'max-age=i', 'lookup-by-subnet', 'lookup-by-host',
+        'auto-whitelist-clients:s', 'whitelist-clients=s@',
+        'whitelist-recipients=s@', 'retry-window=s', 'greylist-action=s',
+        'greylist-text=s', 'privacy', 'hostname=s', 'exim', 'listen-queue-size=i' );
+# note: lookup-by-subnet can be given for compatibility, but it is default
+# so do nothing with it...
+# note: auto-whitelist-clients:s and not auto-whitelist-clients:n so that
+# we can differentiate between --auto-whitelist-clients=0 and
+# auto-whitelist-clients
+
+sub read_config($$)
 {
-    my ($file) =  @_;
+    my ($opt, $file) =  @_;
+
+    # transform @getopt_options into list of config variables
+    my %config_options;
+    for my $optspec (@getopt_options) {
+        my ($keylist, $valspec, $valtype) = ($optspec =~ /([^:=]+)(?:([=:])(.+))?/);
+        defined $keylist or next;
+        my ($key) = split(/\|/, $keylist);
+        $config_options{$key} = {};
+        if($valtype) {
+            $config_options{$key}{valtype} = $valtype;
+            $config_options{$key}{valspec} = $valspec;
+        }
+    }
+
     open(CONFIG, $file) or die "ERROR: can't read $file: $!\n";
     while(<CONFIG>) {
-        chomp;
-        s/^\s+//;
-        s/\s+$//;
+        s/^\s+//; s/\s+$//;
         next if /^#/;
         next if $_ eq '';
+        /^(\S+)\s*=\s*(\S.*)$/ or
+            die "ERROR: $file, line $.: syntax error.\n";
+        my ($key, $value) = ($1, $2);
+        defined $config_options{$key} or
+            die "ERROR: $file, line $.: unknown variable '$key'\n";
+        my $c = $config_options{$key};
+        if(not defined $c->{valtype}) {
+            # yes or no
+            $value =~ /^(?:yes|no)$/ or
+                die "ERROR: $file, line $.: value of $key can be either 'yes' or 'no'\n";
+            $opt->{$key} = $value;
+        }
+        elsif($c->{valtype} eq 's') {
+            $opt->{$key} = $value;
+        }
+        elsif($c->{valtype} eq 's@') {
+            push @{$opt->{$key}}, $value;
+        }
+        elsif($c->{valtype} eq 'i') {
+            $value =~ /^\d+$/ or
+                die "ERROR: $file, line $.: value of $key must be a number\n";
+            $opt->{$key} = $value;
+        }
+        else {
+            die "INTERNAL ERROR in read_config\n";
+        }
     }
 }
+
 
 sub main()
 {
@@ -572,20 +624,16 @@ sub main()
 
     # parse options
     my %opt = ();
-    GetOptions(\%opt, 'help|h', 'man', 'version', 'noaction|no-action|n',
-        'verbose|v', 'quiet|q', 'daemonize|d', 'unix|u=s', 'inet|i=s',
-        'user=s', 'group=s', 'dbdir=s', 'pidfile=s', 'delay=i', 'max-age=i',
-        'lookup-by-subnet', 'lookup-by-host', 'auto-whitelist-clients:s', 
-        'whitelist-clients=s@', 'whitelist-recipients=s@',
-        'retry-window=s', 'greylist-action=s', 'greylist-text=s', 'privacy',
-        'hostname=s', 'exim', 'listen-queue-size=i'
-    ) or exit(1);
-    # note: lookup-by-subnet can be given for compatibility, but it is default
-    # so do not do nothing with it...
-    # note: auto-whitelist-clients:s and not auto-whitelist-clients:n so that
-    # we can differentiate between --auto-whitelist-clients=0 and
-    # auto-whitelist-clients
+    GetOptions(\%opt, @getopt_options) or exit(1);
+    # parse config file
+    my %opt_cfg = ();
+    my $config_file = -f "$CONFIG_DIR/postgrey.conf" ?  "$CONFIG_DIR/postgrey.conf" : undef;
+    $config_file = $opt{config} if defined $opt{config};
+    read_config(\%opt_cfg, $config_file) if defined $config_file;
+    # merge options and config
+    for my $k (keys %opt_cfg) { $opt{$k} = $opt_cfg{$k} unless defined $opt{$k}; };
 
+    # proces options
     if($opt{help})     { pod2usage(1) }
     if($opt{man})      { pod2usage(-exitstatus => 0, -verbose => 2) }
     if($opt{version})  { print "postgrey $VERSION\n"; exit(0) }
