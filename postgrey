@@ -720,10 +720,10 @@ sub main()
             greylist_action  => $opt{'greylist-action'} || 'DEFER_IF_PERMIT',
             greylist_text    => $opt{'greylist-text'} || 'Greylisted, see http://postgrey.schweikert.ch/help/%r.html',
             whitelist_clients_files    => $opt{'whitelist-clients'} ||
-                [ "$CONFIG_DIR/postgrey_whitelist_clients" ,
-                  "$CONFIG_DIR/postgrey_whitelist_clients.local" ],
+                [ "$CONFIG_DIR/whitelist_clients" ,
+                  "$CONFIG_DIR/whitelist_clients.local" ],
             whitelist_recipients_files => $opt{'whitelist-recipients'} ||
-                [ "$CONFIG_DIR/postgrey_whitelist_recipients" ],
+                [ "$CONFIG_DIR/whitelist_recipients" ],
             privacy => defined $opt{'privacy'},
             hostname => defined $opt{hostname} ? $opt{hostname} : hostname,
             exim => defined $opt{'exim'},
@@ -874,6 +874,7 @@ B<postgrey> [I<options>...]
      --version           output version information and exit
  -v, --verbose           increase verbosity level
  -q, --quiet             decrease verbosity level
+ -c, --config=FILE       read config file FILE
  -u, --unix=PATH         listen on unix socket PATH
  -i, --inet=[HOST:]PORT  listen on PORT, localhost if HOST is not specified
  -d, --daemonize         run in the background
@@ -894,8 +895,8 @@ B<postgrey> [I<options>...]
      --privacy           store data using one-way hash functions
      --hostname=NAME     set the hostname (default: `hostname`)
      --exim              don't reuse a socket for more than one query (exim compatible)
-     --whitelist-clients=FILE     default: /etc/postfix/postgrey_whitelist_clients
-     --whitelist-recipients=FILE  default: /etc/postfix/postgrey_whitelist_recipients
+     --whitelist-clients=FILE     default: /etc/postgrey/whitelist_clients
+     --whitelist-recipients=FILE  default: /etc/postgrey/whitelist_recipients
      --auto-whitelist-clients=N   whitelist host after first successful delivery
                                   N is the minimal count of mails before a client is 
                                   whitelisted (turned on by default with value 5)
@@ -903,7 +904,7 @@ B<postgrey> [I<options>...]
      --listen-queue-size=N        allow for N waiting connections to our socket
 
  Note that the --whitelist-x options can be specified multiple times,
- and that per default /etc/postfix/postgrey_whitelist_clients.local is
+ and that per default /etc/postgrey/whitelist_clients.local is
  also read, so that you can put there local entries.
 
 =head1 DESCRIPTION
@@ -950,15 +951,24 @@ Put something like this in /etc/main.cf:
 
 =item *
 
-Install the provided postgrey_whitelist_clients and
-postgrey_whitelist_recipients in /etc/postgrey.
+Install the provided whitelist_clients and
+whitelist_recipients in /etc/postgrey.
 
 =item *
 
-Put in /etc/postgrey/postgrey_whitelist_recipients users that do not want
+Put in /etc/postgrey/whitelist_recipients users that do not want
 greylisting.
 
 =back
+
+=head2 Configuration File
+
+All options can be given either on the command line or can be also specified in
+a configuration file. Per default, postgrey reads the file
+/etc/postgrey/postgrey.conf. The format is:
+ 
+ # comment
+ option = value
 
 =head2 Whitelists
 
@@ -966,9 +976,9 @@ Whitelists allow you to specify client addresses or recipient address, for
 which no greylisting should be done. Per default postgrey will read the
 following files:
 
- /etc/postgrey/postgrey_whitelist_clients
- /etc/postgrey/postgrey_whitelist_clients.local
- /etc/postgrey/postgrey_whitelist_recipients
+ /etc/postgrey/whitelist_clients
+ /etc/postgrey/whitelist_clients.local
+ /etc/postgrey/whitelist_recipients
 
 You can specify alternative paths with the --whitelist-x options.
 
