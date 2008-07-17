@@ -4,6 +4,12 @@
    - dbdir is now per default /var/lib/postgrey and the
      configuration directory /etc/postgrey (instead of
      respectively /var/spool/postfix/postgrey and /etc/postfix).
+   - the whitelist files are now per default:
+     /etc/postgrey/whitelist_clients
+     /etc/postgrey/whitelist_clients.local
+     /etc/postgrey/whitelist_recipients
+   - support has been added to read options from a config file:
+     /etc/postgrey/postgrey.conf ("option = value" format)
 
 * 2007-09-06: version 1.31
 
