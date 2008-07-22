@@ -11,6 +11,13 @@
    - support has been added to read options from a config file:
      /etc/postgrey/postgrey.conf ("option = value" format)
 
+* 2008-07-22: version 1.32
+
+   - fixed recipients whitelisting (David Carrel)
+   - added --syslog-facility option (Peter Rabbitson)
+   - add support for BATV (Edwin Groothuis)
+   - updated whitelist
+
 * 2007-09-06: version 1.31
 
    - support CIDR-style addresses in the client whitelist (Claudio Strizzolo)

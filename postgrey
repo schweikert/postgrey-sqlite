@@ -235,7 +235,7 @@ sub read_recipients_whitelists($)
                 }
                 else {
                     # domain ($user is the domain)
-                    push @whitelist_recipients, qr{(?:^|\.)\Q$user\E$}i;
+                    push @whitelist_recipients, qr{(?:\@|\.)\Q$user\E$}i;
                 }
             }
         }
@@ -254,6 +254,23 @@ sub do_sender_substitutions($$)
 
     my ($user, $domain) = split(/@/, $addr, 2);
     defined $domain or return $addr;
+
+    # BATV is defined as prvs=tag-val=loc-core@, but sometimes shows up
+    # as prvs=loc-core=tag-val@...
+    if ($user =~ /^prvs=/) {
+	my @a = split(/=/, $user);
+	if ($#a == 2) {
+	    if ($a[1] =~ /^[0-9a-z]{10}/ && $a[2] !~ /^[0-9a-z]{10}/) {
+		$user = $a[2];
+	    } elsif ($a[2] =~ /^[0-9a-z]{10}/ && $a[1] !~ /^[0-9a-z]{10}/) {
+		$user = $a[1];
+	    } else {
+		# throw a coin, pick the standard
+		$user = $a[2];
+	    }
+	}
+    }
+
     # strip extension, used sometimes for mailing-list VERP
     $user =~ s/\+.*//;
     # replace numbers in VERP addresses with '#' so that
@@ -555,6 +572,7 @@ my @getopt_options = ( 'config|c=s', 'help|h', 'man', 'version',
         'delay=i', 'max-age=i', 'lookup-by-subnet', 'lookup-by-host',
         'auto-whitelist-clients:s', 'whitelist-clients=s@',
         'whitelist-recipients=s@', 'retry-window=s', 'greylist-action=s',
+        'syslogfacility|syslog-facility|facility=s',
         'greylist-text=s', 'privacy', 'hostname=s', 'exim', 'listen-queue-size=i' );
 # note: lookup-by-subnet can be given for compatibility, but it is default
 # so do nothing with it...
@@ -703,7 +721,7 @@ sub main()
             log_level        => $opt{quiet} ? 1 : ($opt{verbose} ? 3 : 2),
             log_file         => $opt{daemonize} ? 'Sys::Syslog' : undef,
             syslog_logsock   => $syslog_logsock,
-            syslog_facility  => 'mail',
+            syslog_facility  => $opt{syslogfacility} || 'mail',
             syslog_ident     => 'postgrey',
             listen           => $opt{'listen-queue-size'} ? $opt{'listen-queue-size'} : undef,
         },
@@ -873,6 +891,7 @@ B<postgrey> [I<options>...]
  -h, --help              display this help and exit
      --version           output version information and exit
  -v, --verbose           increase verbosity level
+     --syslog-facility   Syslog facility to use (default mail)
  -q, --quiet             decrease verbosity level
  -c, --config=FILE       read config file FILE
  -u, --unix=PATH         listen on unix socket PATH
