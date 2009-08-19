@@ -197,3 +197,5 @@ yahoo.com
 /^outmail\d+\.sctm\.tfbnw\.net$/
 # 2009-02-10: server14.cyon.ch (long retry, reported by Alex Beckert)
 server14.cyon.ch
+# 2009-08-19: 126.com (big pool)
+/^m\d+-\d+\.126\.com$/
