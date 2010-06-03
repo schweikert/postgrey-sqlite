@@ -147,9 +147,8 @@ ibm.com
 berlin.ptb.de
 # registrarmail.net (unique sender names, reported by Simon Waters)
 registrarmail.net
-# google.com (big pool, reported by Matthias Dyer)
-/^.*-out-.*\.google\.com$/
-/^mail.*\.google\.com$/
+# google.com (big pool, reported by Matthias Dyer, Martin Toft)
+google.com
 # orange.fr (big pool, reported by Loïc Le Loarer)
 /^smtp\d+\.orange\.fr$/
 # citigroup.com (slow retry, reported by Michael Monnerie)
@@ -199,3 +198,9 @@ yahoo.com
 server14.cyon.ch
 # 2009-08-19: 126.com (big pool)
 /^m\d+-\d+\.126\.com$/
+# 2010-01-08: tifr.res.in (no retry, reported by Alex Beckert)
+home.theory.tifr.res.in
+# 2010-01-08: 1blu.de (long retry, reported by Alex Beckert)
+ms4-1.1blu.de
+# 2010-03-17: chello.at (big pool, reported by Jan-willem van Eys)
+/^viefep\d+-int\.chello\.at$/
