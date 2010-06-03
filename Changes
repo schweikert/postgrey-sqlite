@@ -1,4 +1,16 @@
-* UNRELEASED: version 2.00alpha2
+* UNRELEASED: version 2.00alpha3
+
+   - merge changes from stable release 1.33:
+     - fix warning with IPv6 address (Edwin Kremer)
+     - added --x-greylist-header option (Guido Leisker)
+     - contrib/postgrey.init: new LSB-compliant init script by Adrian von Bidder
+       (Debian)
+     - contrib/postgreyreport: fix POD error (Christian Perrier)
+     - contrib/postgreyreport: added --tab and --show_time options (Leonard den
+       Ottolander)
+     - updated whitelist
+
+* UNRELEASED: verson 2.00alpha2
 
    - use SQLite instead of BerkeleyDB as DB-backend
    - dbdir is now per default /var/lib/postgrey and the
