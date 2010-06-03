@@ -2,7 +2,7 @@
 
 # Postgrey: a Postfix Greylisting Policy Server
 # Copyright (c) 2004-2007 ETH Zurich
-# Copyright (c) 2007 Open Systems AG, Switzerland
+# Copyright (c) 2007-2010 Open Systems AG, Switzerland
 # released under the GNU General Public License
 
 # see the documentation with 'perldoc postgrey'
@@ -1168,7 +1168,7 @@ for a description of how Postfix policy servers work.
 =head1 COPYRIGHT
 
 Copyright (c) 2004-2007 by ETH Zurich. All rights reserved.
-Copyright (c) 2007 by Open Systems AG. All rights reserved.
+Copyright (c) 2007-2010 by Open Systems AG. All rights reserved.
 
 =head1 LICENSE
 
